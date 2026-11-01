@@ -51,7 +51,7 @@ function MainScreen() {
       </div>
 
       <div className="buttons">
-        <CommandButton tag="GVL_HMI.bStartCmd" className="start" disabled={running}>Start</CommandButton>
+        <CommandButton tag="GVL_HMI.bStartCmd" className="start" disabled={running} holdMs={1000}>Start</CommandButton>
         <CommandButton tag="GVL_HMI.bStopCmd" className="stop">Stop</CommandButton>
       </div>
 

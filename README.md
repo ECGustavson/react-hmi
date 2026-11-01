@@ -40,8 +40,14 @@ Dockerfile  Builds one image with the frontend and server
    | `<AnalogReadout label tag />` | `ST_Analog` | Process value with units |
    | `<Readout label tag unit />` | any number | Counters and plain values |
    | `<CommandButton tag>` | `BOOL` + `hmi_write` | Momentary command, PLC clears it |
+   | `<TextReadout label tag />` | `STRING` | Text from the PLC |
+   | `<TextEntry label tag maxLength />` | `STRING`, writable | Text entry, opens the on-screen keyboard |
 
    Add `minRole="supervisor"` (or `maint`, `admin`) to limit who can use a control. The default is `operator`.
+
+   Add `holdMs={1000}` to `CommandButton`, `SetpointEntry` or `TextEntry` to require a press-and-hold that
+   long before it acts. A fill bar shows progress; releasing early or sliding off cancels. The default (0) is a
+   normal tap.
 
 ## Start a new project (Modbus TCP)
 
@@ -56,11 +62,16 @@ Dockerfile  Builds one image with the frontend and server
 |---|---|---|---|
 | `0xxxxx` | Coil | BOOL | with `"writable": true` |
 | `1xxxxx` | Discrete input | BOOL | no |
-| `3xxxxx` | Input register | INT, UINT, DINT, UDINT, REAL | no |
-| `4xxxxx` | Holding register | INT, UINT, DINT, UDINT, REAL | with `"writable": true` |
+| `3xxxxx` | Input register | INT, UINT, DINT, UDINT, REAL, STRING | no |
+| `4xxxxx` | Holding register | INT, UINT, DINT, UDINT, REAL, STRING | with `"writable": true` |
 
 Addresses are 1-based, as shown in most PLC software (`400001` is the first holding register), and written
 as strings. 32-bit types use two registers; `MODBUS_WORD_ORDER=low-first` matches AutomationDirect PLCs.
+
+`STRING` tags also need `"length"`, the max characters (1 to 200), and use one register per two characters:
+`{ "address": "400101", "type": "STRING", "length": 20, "writable": true }`. The first character goes in
+the high byte, as AutomationDirect stores it (`MODBUS_STRING_BYTE_ORDER=low-first` for PLCs that swap).
+Plain ASCII only. A write always fills every register the tag owns, so a shorter value clears the old text.
 
 Differences from Beckhoff:
 - The tag list comes from the JSON map, not the PLC. Edit it and redeploy when tags change.
@@ -96,6 +107,8 @@ auto-login) for any write and Admin for user changes, but doesn't check per-cont
 The server reads the tag list from the PLC at startup, and again after every download or online change.
 
 ## Develop on your laptop
+
+Needs Node.js 20.19 or newer (the current LTS from nodejs.org is best). Check with `node -v`.
 
 ```
 cd server && npm i && npm start       # needs an ADS route to the PLC

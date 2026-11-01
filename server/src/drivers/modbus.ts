@@ -7,9 +7,13 @@
 // Addresses use the 6-digit (or 5-digit) Modbus notation shown in most PLC software:
 //   0xxxxx  coil              BOOL, writable
 //   1xxxxx  discrete input    BOOL, read-only
-//   3xxxxx  input register    numbers, read-only
-//   4xxxxx  holding register  numbers, writable
+//   3xxxxx  input register    numbers or STRING, read-only
+//   4xxxxx  holding register  numbers or STRING, writable
 // The remaining digits are 1-based: 400001 is the first holding register.
+//
+// STRING tags need "length" (max characters). Two characters per register, first character in the
+// high byte (AutomationDirect's packing; MODBUS_STRING_BYTE_ORDER=low-first for PLCs that swap them).
+// Plain ASCII only, which is what the PLC side can store.
 
 import ModbusRTU from 'modbus-serial';
 import { readFileSync } from 'fs';
@@ -22,11 +26,12 @@ export type ModbusOptions = {
   pollMs: number;          // time between polls
   timeoutMs: number;       // per request
   lowWordFirst: boolean;   // 32-bit word order. AutomationDirect PLCs put the low word first.
+  highByteFirst: boolean;  // STRING byte order. AutomationDirect puts the first character in the high byte.
   tagsFile: string;
 };
 
 type Table = 'coil' | 'input' | 'inputRegister' | 'holding';
-type DataType = 'BOOL' | 'INT' | 'UINT' | 'DINT' | 'UDINT' | 'REAL';
+type DataType = 'BOOL' | 'INT' | 'UINT' | 'DINT' | 'UDINT' | 'REAL' | 'STRING';
 
 type ModbusTag = {
   name: string;
@@ -35,6 +40,7 @@ type ModbusTag = {
   offset: number;      // 0-based protocol address
   type: DataType;
   words: number;       // registers (or bits) used
+  length?: number;     // STRING only: max characters
   writable: boolean;
   analog?: { min: number; max: number; eu: string };   // presented to screens as ST_Analog
 };
@@ -42,7 +48,9 @@ type ModbusTag = {
 type Block = { table: Table; start: number; count: number; tags: ModbusTag[] };
 
 const TABLES: Record<string, Table> = { '0': 'coil', '1': 'input', '3': 'inputRegister', '4': 'holding' };
-const WORDS: Record<DataType, number> = { BOOL: 1, INT: 1, UINT: 1, DINT: 2, UDINT: 2, REAL: 2 };
+const WORDS: Record<Exclude<DataType, 'STRING'>, number> = { BOOL: 1, INT: 1, UINT: 1, DINT: 2, UDINT: 2, REAL: 2 };
+const TYPES: DataType[] = ['BOOL', 'INT', 'UINT', 'DINT', 'UDINT', 'REAL', 'STRING'];
+const MAX_STRING = 200;      // characters (100 registers, fits in one read request)
 const RANGES: Partial<Record<DataType, [number, number]>> = {
   INT: [-32768, 32767], UINT: [0, 65535], DINT: [-2147483648, 2147483647], UDINT: [0, 4294967295],
 };
@@ -92,7 +100,7 @@ export class ModbusDriver implements Driver {
         await this.client.writeCoil(tag.offset, value);
         return;
       }
-      const registers = encode(tag, value, this.opts.lowWordFirst);
+      const registers = encode(tag, value, this.opts);
       if (registers.length === 1) await this.client.writeRegister(tag.offset, registers[0]);
       else await this.client.writeRegisters(tag.offset, registers);
     });
@@ -133,7 +141,7 @@ export class ModbusDriver implements Driver {
         continue;
       }
       for (const tag of block.tags) {
-        this.publish(tag, decode(tag, data, tag.offset - block.start, this.opts.lowWordFirst));
+        this.publish(tag, decode(tag, data, tag.offset - block.start, this.opts));
       }
     }
   }
@@ -183,7 +191,10 @@ export class ModbusDriver implements Driver {
 // Tag map
 // ---------------------------------------------------------------------------
 
-type TagEntry = { address?: unknown; type?: unknown; writable?: unknown; min?: unknown; max?: unknown; eu?: unknown };
+type TagEntry = {
+  address?: unknown; type?: unknown; length?: unknown; writable?: unknown;
+  min?: unknown; max?: unknown; eu?: unknown;
+};
 
 function loadTags(file: string): ModbusTag[] {
   const map: Record<string, TagEntry> = JSON.parse(readFileSync(file, 'utf8'));
@@ -206,9 +217,21 @@ function parseTag(name: string, e: TagEntry): ModbusTag {
 
   const bitTable = table === 'coil' || table === 'input';
   const type = (e.type ?? (bitTable ? 'BOOL' : 'INT')) as DataType;
-  if (!(type in WORDS)) fail(`type must be one of ${Object.keys(WORDS).join(', ')}`);
+  if (!TYPES.includes(type)) fail(`type must be one of ${TYPES.join(', ')}`);
   if (bitTable && type !== 'BOOL') fail('coils and discrete inputs are BOOL');
   if (!bitTable && type === 'BOOL') fail('BOOL needs a coil (0xxxxx) or discrete input (1xxxxx) address');
+
+  let length: number | undefined;
+  if (type === 'STRING') {
+    if (!Number.isInteger(e.length) || (e.length as number) < 1 || (e.length as number) > MAX_STRING) {
+      fail(`STRING needs "length": the max number of characters, 1 to ${MAX_STRING}`);
+    }
+    length = e.length as number;
+  } else if (e.length !== undefined) {
+    fail('"length" is only for STRING');
+  }
+  const words = type === 'STRING' ? Math.ceil(length! / 2) : WORDS[type];
+  if (offset + words > 65536) fail(`address ${address} plus ${words} registers runs past the end of the table`);
 
   const writable = e.writable === true;
   if (writable && (table === 'input' || table === 'inputRegister')) fail('inputs are read-only');
@@ -216,14 +239,14 @@ function parseTag(name: string, e: TagEntry): ModbusTag {
   // min, max or eu makes it an analog value, shown to the screens as an ST_Analog
   let analog: ModbusTag['analog'];
   if (e.min !== undefined || e.max !== undefined || e.eu !== undefined) {
-    if (type === 'BOOL') fail('min, max and eu are for numbers');
+    if (type === 'BOOL' || type === 'STRING') fail('min, max and eu are for numbers');
     if (typeof e.min !== 'number' || typeof e.max !== 'number' || e.min > e.max) {
       fail('analog values need numeric min and max, with min <= max');
     }
     analog = { min: e.min as number, max: e.max as number, eu: typeof e.eu === 'string' ? e.eu : '' };
   }
 
-  return { name, address, table, offset, type, words: WORDS[type], writable, analog };
+  return { name, address, table, offset, type, words, length, writable, analog };
 }
 
 // Group tags into as few read requests as possible
@@ -232,7 +255,7 @@ function buildBlocks(tags: ModbusTag[]): Block[] {
   const sorted = [...tags].sort((a, b) => a.table.localeCompare(b.table) || a.offset - b.offset);
 
   for (const tag of sorted) {
-    const limit = tag.type === 'BOOL' ? MAX_BITS : MAX_REGISTERS;
+    const limit = tag.table === 'coil' || tag.table === 'input' ? MAX_BITS : MAX_REGISTERS;
     const block = blocks[blocks.length - 1];
     const end = tag.offset + tag.words;
     if (block && block.table === tag.table
@@ -251,10 +274,15 @@ function buildBlocks(tags: ModbusTag[]): Block[] {
 // Value conversion
 // ---------------------------------------------------------------------------
 
-function decode(tag: ModbusTag, data: (number | boolean)[], i: number, lowWordFirst: boolean): unknown {
+type Order = Pick<ModbusOptions, 'lowWordFirst' | 'highByteFirst'>;
+
+function decode(tag: ModbusTag, data: (number | boolean)[], i: number, order: Order): unknown {
+  const { lowWordFirst } = order;
   let value: number | boolean;
 
-  if (tag.type === 'BOOL') {
+  if (tag.type === 'STRING') {
+    return decodeString(data.slice(i, i + tag.words) as number[], order.highByteFirst);
+  } else if (tag.type === 'BOOL') {
     value = data[i] === true;
   } else if (tag.words === 1) {
     const word = data[i] as number;
@@ -273,7 +301,16 @@ function decode(tag: ModbusTag, data: (number | boolean)[], i: number, lowWordFi
     : value;
 }
 
-function encode(tag: ModbusTag, value: unknown, lowWordFirst: boolean): number[] {
+function encode(tag: ModbusTag, value: unknown, order: Order): number[] {
+  const { lowWordFirst } = order;
+
+  if (tag.type === 'STRING') {
+    if (typeof value !== 'string') throw new Error(`${tag.name} needs text`);
+    if (value.length > tag.length!) throw new Error(`${tag.name} holds up to ${tag.length} characters`);
+    if (!/^[\x20-\x7e]*$/.test(value)) throw new Error(`${tag.name} takes plain letters, numbers and symbols only`);
+    return encodeString(value, tag.length!, order.highByteFirst);
+  }
+
   if (typeof value !== 'number' || !Number.isFinite(value)) throw new Error(`${tag.name} needs a number`);
 
   const range = RANGES[tag.type];
@@ -289,4 +326,28 @@ function encode(tag: ModbusTag, value: unknown, lowWordFirst: boolean): number[]
   const hi = buf.readUInt16BE(0);
   const lo = buf.readUInt16BE(2);
   return lowWordFirst ? [lo, hi] : [hi, lo];
+}
+
+// Two ASCII characters per register. Reading stops at the first 0 byte (unused space is 0-filled).
+function decodeString(regs: number[], highByteFirst: boolean): string {
+  let s = '';
+  for (const r of regs) {
+    const [first, second] = highByteFirst ? [(r >> 8) & 0xff, r & 0xff] : [r & 0xff, (r >> 8) & 0xff];
+    if (first === 0) break;
+    s += String.fromCharCode(first);
+    if (second === 0) break;
+    s += String.fromCharCode(second);
+  }
+  return s;
+}
+
+// Fills every register the tag owns, so a shorter new value clears the old text behind it
+function encodeString(str: string, maxChars: number, highByteFirst: boolean): number[] {
+  const regs: number[] = [];
+  for (let i = 0; i < Math.ceil(maxChars / 2); i++) {
+    const a = i * 2 < maxChars ? str.charCodeAt(i * 2) || 0 : 0;
+    const b = i * 2 + 1 < maxChars ? str.charCodeAt(i * 2 + 1) || 0 : 0;
+    regs.push(highByteFirst ? (a << 8) | b : (b << 8) | a);
+  }
+  return regs;
 }

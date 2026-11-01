@@ -15,7 +15,7 @@
 import express from 'express';
 import { createServer } from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
-import { existsSync } from 'fs';
+import { existsSync, readFileSync } from 'fs';
 import path from 'path';
 import { hasRole, Role } from './roles';
 import { PublicUser, UserStore } from './users';
@@ -27,7 +27,7 @@ import { ModbusDriver } from './drivers/modbus';
 // Settings (per machine, from .env; see .env.example)
 // ---------------------------------------------------------------------------
 
-if (existsSync('.env')) process.loadEnvFile('.env');
+loadEnv('.env');
 
 const env = process.env;
 
@@ -65,6 +65,7 @@ function createDriver(): Driver {
         pollMs:       Number(env.MODBUS_POLL_MS ?? 250),
         timeoutMs:    Number(env.MODBUS_TIMEOUT_MS ?? 1000),
         lowWordFirst: (env.MODBUS_WORD_ORDER ?? 'low-first').toLowerCase() !== 'high-first',
+        highByteFirst: (env.MODBUS_STRING_BYTE_ORDER ?? 'high-first').toLowerCase() !== 'low-first',
         tagsFile:     path.resolve(env.MODBUS_TAGS ?? './modbus-tags.json'),
       });
     default:
@@ -291,3 +292,18 @@ main().catch((err) => {
   console.error('Startup failed:', err);
   process.exit(1);
 });
+
+// Load KEY=value lines from a .env file into process.env. Ignores blank lines and # comments,
+// including comments after a value. Variables already set in the environment win.
+// (Written out here rather than using process.loadEnvFile, which needs Node 20.12 or newer.)
+function loadEnv(file: string) {
+  if (!existsSync(file)) return;
+  for (const line of readFileSync(file, 'utf8').split(/\r?\n/)) {
+    const match = line.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/);
+    if (!match) continue;
+    let value = match[2].trim();
+    const quoted = value.match(/^(['"])(.*)\1$/);
+    value = quoted ? quoted[2] : value.replace(/\s+#.*$/, '').trim();
+    if (process.env[match[1]] === undefined) process.env[match[1]] = value;
+  }
+}

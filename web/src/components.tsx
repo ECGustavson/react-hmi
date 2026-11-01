@@ -2,12 +2,16 @@
 //
 // minRole (default 'operator') sets who can use a control. Without the role, the control
 // shows a lock, and tapping it opens the login dialog.
+// holdMs (default 0) makes the control require a press-and-hold that long before it acts
+// (see HoldButton). A locked control still opens the login dialog on a plain tap.
 
 import { ReactNode, useState } from 'react';
 import { useHmi, useSession, useTag } from './connection';
 import { isAnalog } from './types';
 import { Role } from './roles';
 import { Numpad } from './Numpad';
+import { TextPad } from './TextPad';
+import { HoldButton } from './HoldButton';
 
 // Plain number with a fixed unit, e.g. a DINT counter
 export function Readout({ label, tag, unit = '', decimals = 0 }:
@@ -31,8 +35,8 @@ export function AnalogReadout({ label, tag, decimals = 1 }:
 
 // ST_Analog, adjustable. Tap to open the numpad; range and units come from the PLC.
 // Writes <tag>.fValue only, which is the only member the server allows.
-export function SetpointEntry({ label, tag, decimals = 1, minRole = 'operator' }:
-  { label: string; tag: string; decimals?: number; minRole?: Role }) {
+export function SetpointEntry({ label, tag, decimals = 1, minRole = 'operator', holdMs = 0 }:
+  { label: string; tag: string; decimals?: number; minRole?: Role; holdMs?: number }) {
   const { value, connected } = useTag(tag);
   const { write } = useTag(`${tag}.fValue`);
   const { can, promptLogin } = useSession();
@@ -42,11 +46,11 @@ export function SetpointEntry({ label, tag, decimals = 1, minRole = 'operator' }
 
   return (
     <Row label={label} unit={ok ? value.sEU : ''}>
-      <button className={allowed ? 'entry' : 'entry locked'} disabled={!connected || !ok}
-        onClick={() => (allowed ? setOpen(true) : promptLogin())}>
+      <HoldButton className={allowed ? 'entry' : 'entry locked'} disabled={!connected || !ok}
+        holdMs={allowed ? holdMs : 0} onActivate={() => (allowed ? setOpen(true) : promptLogin())}>
         {!allowed && <LockIcon />}
         {ok ? value.fValue.toFixed(decimals) : '--'}
-      </button>
+      </HoldButton>
 
       {/* Closes on its own if the connection drops or the login ends, so nothing is written by mistake */}
       {open && connected && ok && allowed && (
@@ -60,30 +64,70 @@ export function SetpointEntry({ label, tag, decimals = 1, minRole = 'operator' }
   );
 }
 
+// STRING tag, read-only
+export function TextReadout({ label, tag }: { label: string; tag: string }) {
+  const { value } = useTag(tag);
+  return (
+    <Row label={label} wide>
+      <output className="text">{typeof value === 'string' && value !== '' ? value : '--'}</output>
+    </Row>
+  );
+}
+
+// STRING tag, adjustable. Tap to open the on-screen keyboard.
+// maxLength should match the tag's "length" in the tag map; the server rejects anything longer.
+export function TextEntry({ label, tag, maxLength, allowEmpty = false, minRole = 'operator', holdMs = 0 }:
+  { label: string; tag: string; maxLength: number; allowEmpty?: boolean; minRole?: Role; holdMs?: number }) {
+  const { value, connected, write } = useTag(tag);
+  const { can, promptLogin } = useSession();
+  const [open, setOpen] = useState(false);
+  const ok = typeof value === 'string';
+  const allowed = can(minRole);
+
+  return (
+    <Row label={label} wide>
+      <HoldButton className={allowed ? 'entry text' : 'entry text locked'} disabled={!connected || !ok}
+        holdMs={allowed ? holdMs : 0} onActivate={() => (allowed ? setOpen(true) : promptLogin())}>
+        {!allowed && <LockIcon />}
+        {ok && value !== '' ? value : '--'}
+      </HoldButton>
+
+      {open && connected && ok && allowed && (
+        <TextPad title={label} initial={value} maxLength={maxLength} allowEmpty={allowEmpty}
+          onEnter={(text) => { write(text); setOpen(false); }}
+          onCancel={() => setOpen(false)} />
+      )}
+    </Row>
+  );
+}
+
 // Momentary command: sets a BOOL TRUE, and the PLC clears it after acting
-export function CommandButton({ tag, children, className = '', disabled = false, minRole = 'operator' }:
-  { tag: string; children: ReactNode; className?: string; disabled?: boolean; minRole?: Role }) {
+export function CommandButton({ tag, children, className = '', disabled = false, minRole = 'operator', holdMs = 0 }:
+  { tag: string; children: ReactNode; className?: string; disabled?: boolean; minRole?: Role; holdMs?: number }) {
   const { connected, write } = useTag(tag);
   const { can, promptLogin } = useSession();
   const allowed = can(minRole);
 
   return (
-    <button className={allowed ? className : `${className} locked`} disabled={!connected || disabled}
-      onClick={() => (allowed ? write(true) : promptLogin())}>
+    <HoldButton className={allowed ? className : `${className} locked`} disabled={!connected || disabled}
+      holdMs={allowed ? holdMs : 0} onActivate={() => (allowed ? write(true) : promptLogin())}>
       {!allowed && <LockIcon />}
       {children}
-    </button>
+    </HoldButton>
   );
 }
 
-// Shared layout: label | value | units. Values grey out while the PLC is disconnected (they're stale).
-function Row({ label, unit, children }: { label: string; unit: string; children: ReactNode }) {
+// Shared layout: label | value | units, or label | wide value for text.
+// Values grey out while the PLC is disconnected (they're stale).
+function Row({ label, unit = '', wide = false, children }:
+  { label: string; unit?: string; wide?: boolean; children: ReactNode }) {
   const { connected } = useHmi();
+  const classes = ['row', wide ? 'wide' : '', connected ? '' : 'stale'].filter(Boolean).join(' ');
   return (
-    <div className={connected ? 'row' : 'row stale'}>
+    <div className={classes}>
       <label>{label}</label>
       {children}
-      <span className="unit">{unit}</span>
+      {!wide && <span className="unit">{unit}</span>}
     </div>
   );
 }

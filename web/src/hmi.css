@@ -89,3 +89,17 @@ button.session { min-height: 40px; padding: 4px 12px; font-size: 0.95rem; }
 button.selected { background: #1f5fbf; border-color: #1f5fbf; color: #fff; }
 button.danger { background: #c62828; border-color: #c62828; color: #fff; }
 button.danger-outline { border-color: #c62828; color: #c62828; }
+
+/* Text rows (TextReadout, TextEntry): label | wide value, no units column */
+.row.wide { grid-template-columns: minmax(0, 1fr) minmax(0, 2fr); }
+output.text, button.entry.text { text-align: left; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* Press-and-hold buttons (HoldButton): a fill bar grows across the button while it's held */
+button.hold { position: relative; overflow: hidden; touch-action: none; user-select: none; -webkit-user-select: none; }
+button.hold::before { content: ''; position: absolute; inset: 0; background: rgba(31, 95, 191, 0.28);
+  transform: scaleX(0); transform-origin: left; transition: transform 0.12s ease-out; pointer-events: none; }
+button.hold.holding::before { transform: scaleX(1); transition: transform var(--hold-ms) linear; }
+
+/* Text for screen readers only */
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden;
+  clip: rect(0 0 0 0); white-space: nowrap; border: 0; }

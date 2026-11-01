@@ -1,21 +1,26 @@
-// On-screen keyboard for short text such as user names.
+// On-screen keyboard for short text such as user names, recipe names and PLC strings.
 // Shift is on at the start and after a space, so names capitalize themselves, like a phone keyboard.
+// Plain ASCII only, since that's what PLC strings can store.
 
 import { useEffect, useState } from 'react';
 import { Modal } from './Modal';
 
 const ROWS = ['1234567890', 'QWERTYUIOP', 'ASDFGHJKL', 'ZXCVBNM'];
+const SYMBOLS = "-.,/&#()'";
 
-export function TextPad({ title, initial = '', maxLength = 24, onEnter, onCancel }: {
+export function TextPad({ title, initial = '', maxLength = 24, allowEmpty = false, onEnter, onCancel }: {
   title: string;
   initial?: string;
   maxLength?: number;
+  allowEmpty?: boolean;   // true: Done works with nothing entered (clears the value)
   onEnter: (text: string) => void;
   onCancel: () => void;
 }) {
   const [text, setText] = useState(initial);
   const [shift, setShift] = useState(initial === '');
-  const valid = text.trim().length > 0;
+  const valid = allowEmpty || text.trim().length > 0;
+
+  const symbol = (ch: string) => setText((t) => (t.length < maxLength ? t + ch : t));
 
   const type = (ch: string) => {
     setText((t) => (t.length < maxLength ? t + (shift ? ch.toUpperCase() : ch.toLowerCase()) : t));
@@ -31,11 +36,11 @@ export function TextPad({ title, initial = '', maxLength = 24, onEnter, onCancel
   // Physical keyboard also works
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (/^[a-zA-Z0-9]$/.test(e.key)) {
+      if (e.key === ' ') space();
+      else if (/^[\x21-\x7e]$/.test(e.key)) {
         setText((t) => (t.length < maxLength ? t + e.key : t));
         setShift(false);
       }
-      else if (e.key === ' ') space();
       else if (e.key === 'Backspace') back();
       else if (e.key === 'Enter') enter();
       else if (e.key === 'Escape') onCancel();
@@ -60,6 +65,11 @@ export function TextPad({ title, initial = '', maxLength = 24, onEnter, onCancel
             ))}
           </div>
         ))}
+        <div className="kb-row">
+          {SYMBOLS.split('').map((ch) => (
+            <button key={ch} onClick={() => symbol(ch)}>{ch}</button>
+          ))}
+        </div>
         <div className="kb-row">
           <button className={shift ? 'kb-wide selected' : 'kb-wide'} onClick={() => setShift((s) => !s)}>Shift</button>
           <button className="kb-space" onClick={space}>Space</button>
